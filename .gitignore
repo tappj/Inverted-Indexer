@@ -1,1 +1,6 @@
 analyst/
+.DS_Store
+index/
+
+__pycache__/
+*.pyc
