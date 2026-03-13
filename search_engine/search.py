@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import re as re_module
 from nltk.stem import PorterStemmer
 
 INDEX_PATH = "../index/index.json"
@@ -20,7 +21,27 @@ print("Index loaded!")
 
 def tokenize(text):
     tokens = re.findall(r'[a-zA-Z0-9]+', text.lower())
-    return [ps.stem(token) for token in tokens]
+    stemmed = [ps.stem(token) for token in tokens]
+    return [t for t in stemmed if len(t) > 2]  # filter out very short tokens
+
+def is_low_quality_url(url):
+    patterns = [
+        r'/news/page/\d+',
+        r'/page/\d+',
+        r'/\d{4}/\d{2}/',
+        r'/\d{4}/$',
+        r'#more-\d+',
+        r'/news/$',
+        r'/news$',
+        r'/faculty/$',
+        r'/faculty$',
+        r'/events/$',
+        r'/events$',
+    ]
+    for pattern in patterns:
+        if re_module.search(pattern, url):
+            return True
+    return False
 
 # Search prompt
 while True:
@@ -73,11 +94,22 @@ while True:
             # Boost score if term appeared in important text
             if posting['important']:
                 tf_idf *= 1.5
-            scores[doc_id] = scores.get(doc_id, 0) + tf_idf
+            url = doc_id_map[doc_id]
+            penalty = 0.3 if is_low_quality_url(url) else 1.0
+            scores[doc_id] = scores.get(doc_id, 0) + tf_idf * penalty
 
     # Sort by score descending
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
+    # Remove #fragment duplicates before displaying
+    seen_urls = set()
+    clean_results = []
+    for doc_id, score in ranked:
+        url = doc_id_map[doc_id].split('#')[0]  # strip #content etc
+        if url not in seen_urls:
+            seen_urls.add(url)
+            clean_results.append((url, score))
+
     print(f"\nTop 5 results for '{query}':")
-    for doc_id, score in ranked[:5]:
-        print(f"  {doc_id_map[doc_id]}")
+    for url, score in clean_results[:5]:
+        print(f"  {url}")

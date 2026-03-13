@@ -2,6 +2,7 @@ import warnings
 import json
 import os
 import re
+import hashlib
 from bs4 import BeautifulSoup
 from nltk.stem import PorterStemmer
 from bs4 import XMLParsedAsHTMLWarning
@@ -20,9 +21,15 @@ def tokenize(text):
 def process_document(file_path, doc_id):
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-
+ 
+    # Exact duplicate detection
+    content_hash = hashlib.md5(data['content'].encode('utf-8')).hexdigest()
+    if content_hash in seen_hashes:
+        return None, None
+    seen_hashes.add(content_hash)
+ 
     url = data['url']
-
+ 
     try:
         soup = BeautifulSoup(data['content'], 'html.parser')
     except Exception:
@@ -50,6 +57,9 @@ def process_document(file_path, doc_id):
 
     return url, postings
 
+seen_hashes = set()
+duplicates_skipped = 0 
+
 # Main indexing loop
 inverted_index = defaultdict(list)  # token -> list of postings
 doc_id_map = {}                     # doc_id -> url
@@ -65,6 +75,9 @@ for folder in folders:
     for filename in files:
         file_path = os.path.join(folder_path, filename)
         url, postings = process_document(file_path, doc_id)
+        if url is None:
+            duplicates_skipped += 1
+            continue
         doc_id_map[doc_id] = url
         for token, posting in postings.items():
             inverted_index[token].append(posting)
@@ -72,7 +85,8 @@ for folder in folders:
         if doc_id % 100 == 0:
             print(f"Processed {doc_id} documents...")
 
-print(f"\nDone! Indexed {doc_id} documents")
+print(f"Done! Indexed {doc_id} documents")
+print(f"Duplicates skipped: {duplicates_skipped}")
 print(f"Unique tokens: {len(inverted_index)}")
 
 # Save index to disk
