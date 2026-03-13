@@ -37,6 +37,11 @@ def is_low_quality_url(url):
         r'/faculty$',
         r'/events/$',
         r'/events$',
+        r'/motherboard-',
+        r'/huffington-post-',
+        r'/rolling-stone-',
+        r'/wired-',
+        r'/daily-pilot-',
     ]
     for pattern in patterns:
         if re_module.search(pattern, url):
