@@ -6,6 +6,7 @@ from nltk.stem import PorterStemmer
 
 INDEX_PATH = "../index/index.json"
 DOC_MAP_PATH = "../index/doc_id_map.json"
+HITS_PATH = "../index/hits_scores.json"
 
 ps = PorterStemmer()
 
@@ -25,6 +26,9 @@ with open(INDEX_PATH, 'r') as f:
 
 with open(DOC_MAP_PATH, 'r') as f:
     doc_id_map = json.load(f)
+
+with open(HITS_PATH, 'r') as f:
+    hits_scores = json.load(f)
 
 print("Index loaded!")
 
@@ -61,13 +65,11 @@ def is_low_quality_url(url):
     return False
 
 def terms_are_close(positions_dict, terms, window=5):
-    """Check if all terms appear within 'window' words of each other."""
     if len(terms) < 2:
         return False
     all_pos = [positions_dict.get(t, []) for t in terms]
     if any(len(p) == 0 for p in all_pos):
         return False
-    # Check if any combination of positions is within the window
     for p1 in all_pos[0]:
         for p2 in all_pos[1]:
             if abs(p1 - p2) <= window:
@@ -107,7 +109,7 @@ while True:
         matching_docs = set()
 
     # Build positions lookup per doc
-    doc_positions = defaultdict(dict) if False else {}
+    doc_positions = {}
     for term in terms:
         if term not in inverted_index:
             continue
@@ -139,14 +141,19 @@ while True:
             if posting['important']:
                 tf_idf *= 1.5
 
-            # Proximity boost if terms appear close together
+            # Proximity boost
             if len(terms) > 1 and doc_id in doc_positions:
                 if terms_are_close(doc_positions[doc_id], terms):
                     tf_idf *= 1.5
 
             url = doc_id_map[doc_id]
             penalty = 0.3 if is_low_quality_url(url) else 1.0
-            scores[doc_id] = scores.get(doc_id, 0) + tf_idf * penalty
+
+            # HITS authority boost
+            authority = hits_scores.get(doc_id, {}).get('authority', 0)
+            hits_boost = 1.0 + authority
+
+            scores[doc_id] = scores.get(doc_id, 0) + tf_idf * penalty * hits_boost
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
