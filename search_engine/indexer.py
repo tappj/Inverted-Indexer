@@ -3,9 +3,8 @@ import json
 import os
 import re
 import hashlib
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from nltk.stem import PorterStemmer
-from bs4 import XMLParsedAsHTMLWarning
 from collections import Counter, defaultdict
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
@@ -14,22 +13,35 @@ ANALYST_PATH = "../ANALYST"
 
 ps = PorterStemmer()
 
+STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "its", "as", "be", "was",
+    "are", "were", "been", "has", "have", "had", "do", "does", "did",
+    "will", "would", "could", "should", "may", "might", "shall", "can",
+    "not", "no", "so", "if", "up", "out", "about", "into", "than",
+    "then", "that", "this", "these", "those", "what", "which", "who",
+    "how", "when", "where", "why", "all", "any", "both", "each"
+}
+
 def tokenize(text):
     tokens = re.findall(r'[a-zA-Z0-9]+', text.lower())
-    return [ps.stem(token) for token in tokens]
+    return [ps.stem(token) for token in tokens if token not in STOPWORDS]
+
+def make_ngrams(tokens, n=2):
+    return ['_'.join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
 
 def process_document(file_path, doc_id):
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
- 
+
     # Exact duplicate detection
     content_hash = hashlib.md5(data['content'].encode('utf-8')).hexdigest()
     if content_hash in seen_hashes:
         return None, None
     seen_hashes.add(content_hash)
- 
+
     url = data['url']
- 
+
     try:
         soup = BeautifulSoup(data['content'], 'html.parser')
     except Exception:
@@ -44,25 +56,36 @@ def process_document(file_path, doc_id):
     normal_tokens = tokenize(all_text)
     important_tokens = set(tokenize(title_text + " " + h_text + " " + bold_text))
 
-    tf = Counter(normal_tokens)
+    # Build word positions
+    positions = defaultdict(list)
+    for pos, token in enumerate(normal_tokens):
+        positions[token].append(pos)
 
-    # Build postings: token -> {doc_id, tf, is_important}
+    # Generate bigrams and trigrams
+    bigrams = make_ngrams(normal_tokens, 2)
+    trigrams = make_ngrams(normal_tokens, 3)
+    all_tokens = normal_tokens + bigrams + trigrams
+
+    tf = Counter(all_tokens)
+
+    # Build postings with positions
     postings = {}
     for token, freq in tf.items():
         postings[token] = {
             'doc_id': doc_id,
             'tf': freq,
-            'important': token in important_tokens
+            'important': token in important_tokens,
+            'positions': positions.get(token, [])
         }
 
     return url, postings
 
 seen_hashes = set()
-duplicates_skipped = 0 
+duplicates_skipped = 0
 
 # Main indexing loop
-inverted_index = defaultdict(list)  # token -> list of postings
-doc_id_map = {}                     # doc_id -> url
+inverted_index = defaultdict(list)
+doc_id_map = {}
 doc_id = 0
 
 folders = [f for f in os.listdir(ANALYST_PATH) if not f.startswith('.')]
