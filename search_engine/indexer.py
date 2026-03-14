@@ -79,8 +79,8 @@ def process_document(file_path, doc_id):
             'positions': positions.get(token, [])
         }
 
-    # Extract anchor text and build link graph
-    anchor_map = {}
+    # Extract anchor text pointing to other pages
+    anchor_map = {}  # target_url -> list of anchor tokens
     for tag in soup.find_all('a', href=True):
         href = tag['href'].strip()
         anchor_text = tag.get_text().strip()
@@ -103,13 +103,13 @@ duplicates_skipped = 0
 # Main indexing loop
 inverted_index = defaultdict(list)
 doc_id_map = {}
-url_to_doc_id = {}
+url_to_doc_id = {}  # reverse lookup
 doc_id = 0
-all_anchor_maps = {}
-link_graph = defaultdict(set)  # doc_id -> set of doc_ids it links to
+all_anchor_maps = {}  # collect all anchor text first
 
 folders = [f for f in os.listdir(ANALYST_PATH) if not f.startswith('.')]
 
+# First pass: index all documents and collect anchor maps
 for folder in folders:
     folder_path = os.path.join(ANALYST_PATH, folder)
     if not os.path.isdir(folder_path):
@@ -125,6 +125,7 @@ for folder in folders:
         url_to_doc_id[url] = doc_id
         for token, posting in postings.items():
             inverted_index[token].append(posting)
+        # Collect anchor maps
         for target_url, tokens in anchor_map.items():
             if target_url not in all_anchor_maps:
                 all_anchor_maps[target_url] = []
@@ -133,9 +134,10 @@ for folder in folders:
         if doc_id % 100 == 0:
             print(f"Processed {doc_id} documents...")
 
-# Second pass: add anchor text and build link graph
-print("Adding anchor text and building link graph...")
+# Second pass: add anchor text tokens to target pages
+print("Adding anchor text to index...")
 for target_url, tokens in all_anchor_maps.items():
+    # Strip fragment from target url
     target_url_clean = urldefrag(target_url)[0]
     if target_url_clean not in url_to_doc_id:
         continue
@@ -145,71 +147,9 @@ for target_url, tokens in all_anchor_maps.items():
         inverted_index[token].append({
             'doc_id': target_doc_id,
             'tf': freq,
-            'important': True,
+            'important': True,  # anchor text is always treated as important
             'positions': []
         })
-
-# Build link graph from anchor maps
-for folder in folders:
-    folder_path = os.path.join(ANALYST_PATH, folder)
-    if not os.path.isdir(folder_path):
-        continue
-    files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
-    for filename in files:
-        file_path = os.path.join(folder_path, filename)
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            src_url = urldefrag(data['url'])[0]
-            if src_url not in url_to_doc_id:
-                continue
-            src_id = url_to_doc_id[src_url]
-            soup = BeautifulSoup(data['content'], 'html.parser')
-            for tag in soup.find_all('a', href=True):
-                href = tag['href'].strip()
-                if not href or href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
-                    continue
-                target_url = urldefrag(urljoin(src_url, href))[0]
-                if target_url in url_to_doc_id:
-                    link_graph[src_id].add(url_to_doc_id[target_url])
-        except Exception:
-            continue
-
-# Compute HITS scores
-print("Computing HITS scores...")
-ITERATIONS = 20
-n = len(doc_id_map)
-hub = {i: 1.0 for i in range(n)}
-authority = {i: 1.0 for i in range(n)}
-
-# Build reverse graph (who links TO each page)
-reverse_graph = defaultdict(set)
-for src, targets in link_graph.items():
-    for tgt in targets:
-        reverse_graph[tgt].add(src)
-
-for _ in range(ITERATIONS):
-    # Update authority: sum of hub scores of pages linking in
-    new_auth = {}
-    for i in range(n):
-        new_auth[i] = sum(hub[j] for j in reverse_graph[i])
-
-    # Update hub: sum of authority scores of pages linking out
-    new_hub = {}
-    for i in range(n):
-        new_hub[i] = sum(authority[j] for j in link_graph[i])
-
-    # Normalize
-    auth_norm = max(new_auth.values()) or 1
-    hub_norm = max(new_hub.values()) or 1
-    authority = {i: v / auth_norm for i, v in new_auth.items()}
-    hub = {i: v / hub_norm for i, v in new_hub.items()}
-
-# Save HITS scores
-hits_scores = {str(i): {'authority': authority[i], 'hub': hub[i]} for i in range(n)}
-with open("../index/hits_scores.json", 'w') as f:
-    json.dump(hits_scores, f)
-print("HITS scores saved!")
 
 print(f"Done! Indexed {doc_id} documents")
 print(f"Duplicates skipped: {duplicates_skipped}")

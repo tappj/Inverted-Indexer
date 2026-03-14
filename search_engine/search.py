@@ -6,7 +6,6 @@ from nltk.stem import PorterStemmer
 
 INDEX_PATH = "../index/index.json"
 DOC_MAP_PATH = "../index/doc_id_map.json"
-HITS_PATH = "../index/hits_scores.json"
 
 ps = PorterStemmer()
 
@@ -20,15 +19,13 @@ STOPWORDS = {
     "how", "when", "where", "why", "all", "any", "both", "each"
 }
 
+# Load index into memory
 print("Loading index...")
 with open(INDEX_PATH, 'r') as f:
     inverted_index = json.load(f)
 
 with open(DOC_MAP_PATH, 'r') as f:
     doc_id_map = json.load(f)
-
-with open(HITS_PATH, 'r') as f:
-    hits_scores = json.load(f)
 
 print("Index loaded!")
 
@@ -38,6 +35,8 @@ def tokenize(text):
 
 def make_ngrams(tokens, n=2):
     return ['_'.join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
+
+import re as re_module
 
 def is_low_quality_url(url):
     patterns = [
@@ -60,20 +59,8 @@ def is_low_quality_url(url):
         r'/medium-',
     ]
     for pattern in patterns:
-        if re.search(pattern, url):
+        if re_module.search(pattern, url):
             return True
-    return False
-
-def terms_are_close(positions_dict, terms, window=5):
-    if len(terms) < 2:
-        return False
-    all_pos = [positions_dict.get(t, []) for t in terms]
-    if any(len(p) == 0 for p in all_pos):
-        return False
-    for p1 in all_pos[0]:
-        for p2 in all_pos[1]:
-            if abs(p1 - p2) <= window:
-                return True
     return False
 
 while True:
@@ -84,6 +71,7 @@ while True:
     terms = tokenize(query)
     print(f"Stemmed query terms: {terms}")
 
+    # Also generate ngrams from query
     bigrams = make_ngrams(terms, 2)
     trigrams = make_ngrams(terms, 3)
     all_query_terms = terms + bigrams + trigrams
@@ -108,18 +96,7 @@ while True:
     else:
         matching_docs = set()
 
-    # Build positions lookup per doc
-    doc_positions = {}
-    for term in terms:
-        if term not in inverted_index:
-            continue
-        for posting in inverted_index[term]:
-            doc_id = str(posting['doc_id'])
-            if doc_id in matching_docs:
-                if doc_id not in doc_positions:
-                    doc_positions[doc_id] = {}
-                doc_positions[doc_id][term] = posting.get('positions', [])
-
+    # Score using all terms including ngrams
     total_docs = len(doc_id_map)
     scores = {}
 
@@ -129,6 +106,8 @@ while True:
         postings = inverted_index[term]
         df = len(postings)
         idf = math.log(total_docs / (df + 1))
+
+        # Boost ngram matches more than unigrams
         is_ngram = '_' in term
         ngram_boost = 2.0 if is_ngram else 1.0
 
@@ -140,23 +119,14 @@ while True:
             tf_idf = (1 + math.log(tf)) * idf * ngram_boost
             if posting['important']:
                 tf_idf *= 1.5
-
-            # Proximity boost
-            if len(terms) > 1 and doc_id in doc_positions:
-                if terms_are_close(doc_positions[doc_id], terms):
-                    tf_idf *= 1.5
-
             url = doc_id_map[doc_id]
             penalty = 0.3 if is_low_quality_url(url) else 1.0
+            scores[doc_id] = scores.get(doc_id, 0) + tf_idf * penalty
 
-            # HITS authority boost
-            authority = hits_scores.get(doc_id, {}).get('authority', 0)
-            hits_boost = 1.0 + authority
-
-            scores[doc_id] = scores.get(doc_id, 0) + tf_idf * penalty * hits_boost
-
+    # Sort by score
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
+    # Remove #fragment duplicates
     seen_urls = set()
     clean_results = []
     for doc_id, score in ranked:
