@@ -6,6 +6,7 @@ import hashlib
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from nltk.stem import PorterStemmer
 from collections import Counter, defaultdict
+from urllib.parse import urljoin, urldefrag
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -37,7 +38,7 @@ def process_document(file_path, doc_id):
     # Exact duplicate detection
     content_hash = hashlib.md5(data['content'].encode('utf-8')).hexdigest()
     if content_hash in seen_hashes:
-        return None, None
+        return None, None, {}
     seen_hashes.add(content_hash)
 
     url = data['url']
@@ -45,7 +46,7 @@ def process_document(file_path, doc_id):
     try:
         soup = BeautifulSoup(data['content'], 'html.parser')
     except Exception:
-        return url, {}
+        return url, {}, {}
 
     # Extract important and normal text
     title_text = soup.title.get_text() if soup.title else ""
@@ -78,7 +79,23 @@ def process_document(file_path, doc_id):
             'positions': positions.get(token, [])
         }
 
-    return url, postings
+    # Extract anchor text pointing to other pages
+    anchor_map = {}  # target_url -> list of anchor tokens
+    for tag in soup.find_all('a', href=True):
+        href = tag['href'].strip()
+        anchor_text = tag.get_text().strip()
+        if not href or not anchor_text:
+            continue
+        if href.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+            continue
+        target_url = urldefrag(urljoin(url, href))[0]
+        tokens = tokenize(anchor_text)
+        if tokens:
+            if target_url not in anchor_map:
+                anchor_map[target_url] = []
+            anchor_map[target_url].extend(tokens)
+
+    return url, postings, anchor_map
 
 seen_hashes = set()
 duplicates_skipped = 0
@@ -86,10 +103,13 @@ duplicates_skipped = 0
 # Main indexing loop
 inverted_index = defaultdict(list)
 doc_id_map = {}
+url_to_doc_id = {}  # reverse lookup
 doc_id = 0
+all_anchor_maps = {}  # collect all anchor text first
 
 folders = [f for f in os.listdir(ANALYST_PATH) if not f.startswith('.')]
 
+# First pass: index all documents and collect anchor maps
 for folder in folders:
     folder_path = os.path.join(ANALYST_PATH, folder)
     if not os.path.isdir(folder_path):
@@ -97,16 +117,39 @@ for folder in folders:
     files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
     for filename in files:
         file_path = os.path.join(folder_path, filename)
-        url, postings = process_document(file_path, doc_id)
+        url, postings, anchor_map = process_document(file_path, doc_id)
         if url is None:
             duplicates_skipped += 1
             continue
         doc_id_map[doc_id] = url
+        url_to_doc_id[url] = doc_id
         for token, posting in postings.items():
             inverted_index[token].append(posting)
+        # Collect anchor maps
+        for target_url, tokens in anchor_map.items():
+            if target_url not in all_anchor_maps:
+                all_anchor_maps[target_url] = []
+            all_anchor_maps[target_url].extend(tokens)
         doc_id += 1
         if doc_id % 100 == 0:
             print(f"Processed {doc_id} documents...")
+
+# Second pass: add anchor text tokens to target pages
+print("Adding anchor text to index...")
+for target_url, tokens in all_anchor_maps.items():
+    # Strip fragment from target url
+    target_url_clean = urldefrag(target_url)[0]
+    if target_url_clean not in url_to_doc_id:
+        continue
+    target_doc_id = url_to_doc_id[target_url_clean]
+    tf = Counter(tokens)
+    for token, freq in tf.items():
+        inverted_index[token].append({
+            'doc_id': target_doc_id,
+            'tf': freq,
+            'important': True,  # anchor text is always treated as important
+            'positions': []
+        })
 
 print(f"Done! Indexed {doc_id} documents")
 print(f"Duplicates skipped: {duplicates_skipped}")
